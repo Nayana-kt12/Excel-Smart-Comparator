@@ -3,8 +3,8 @@
 A Streamlit application to compare any two Excel workbooks/sheets and export a new Excel report.
 
 ## Features
-- Upload two Excel files and choose a worksheet from each.
-- Map columns using AWS Bedrock semantic matching (optional) with normalized-name matching as a fallback.
+- Upload two Excel files and choose a worksheet from each. The app detects header rows in the first 20 rows, including sheets with title rows above their headers, and recommends the second workbook sheet with the most matching column headers.
+- Map columns using Anthropic Claude Sonnet through AWS Bedrock (optional), with normalized-name, alias, and initialism matching as a fallback.
 - Display columns that do not have a counterpart as **No match found**.
 - Match rows automatically:
   - If both sheets have a common ID-like column, use that ID as the authoritative row key.
@@ -24,9 +24,9 @@ python -m pip install -r requirements.txt
 streamlit run app.py
 ```
 
-## AWS Bedrock setup
+## Claude Sonnet via AWS Bedrock
 
-1. In AWS, enable model access for a model available in your Bedrock region.
+1. In AWS, enable access to Claude Sonnet 5.5 and its global inference profile (`global.anthropic.claude-sonnet-5-5`) for your account and region.
 2. Configure credentials using one of the standard AWS methods. For example, in PowerShell:
 
 ```powershell
@@ -38,15 +38,16 @@ $env:AWS_DEFAULT_REGION="us-east-1"
 If your organization uses temporary credentials, also set `AWS_SESSION_TOKEN`. Alternatively, configure `aws configure`, use an AWS profile, or run the app on an IAM role with Bedrock permissions.
 
 3. Ensure the identity has permission for `bedrock:InvokeModel` / `bedrock:InvokeModelWithResponseStream` as required by your environment. The app uses the Bedrock Runtime `Converse` API.
-4. In the sidebar, enable Bedrock and enter a model ID that is enabled in your account and region. The default shown is an example; replace it if your account uses a different model.
+4. In the sidebar, enable Claude Sonnet and enter a model ID or inference profile enabled in your account and region. The app uses the Bedrock Runtime `Converse` API; it does not call the Anthropic API directly.
 
 **Security:** Do not paste AWS access keys into the app or commit them to source control. Credentials are read by boto3 from the standard AWS credential chain.
 
 ## Important matching behavior
 
 - The application treats a common ID column as the strongest key. It does not silently pair different IDs just because other fields look similar.
-- If no common ID column is detected, row similarity is computed over all mapped columns. The threshold is adjustable in the UI. For large sheets, this fallback can be slower because it compares row candidates between both sheets.
-- When column names differ semantically (for example, `Emp Name` and `Employee Full Name`), use the Bedrock suggestion button. Review the mapping shown in the UI before generating the report.
+- If no common ID column is detected, unique matches on a mapped employee-name column are paired first; duplicate names are not used as keys. Remaining rows are matched by similarity across mapped columns. The threshold is adjustable in the UI.
+- Exact normalized names are matched first. Common aliases such as `Department`/`DEPT`, `Basic`/`BS`, `Employee Name`/`Name`, and initialisms of multiword headers are matched automatically when unambiguous.
+- When column names differ semantically beyond those aliases, use the Claude Sonnet suggestion button. Review the mapping shown in the UI before generating the report.
 - For numerical fields, differences are calculated only when both values are numeric. Text/category mismatches are marked **No match found**.
 - A value missing from one side is displayed as **No match found** in the report.
 
@@ -57,6 +58,7 @@ excel_smart_comparator/
 ├── app.py
 ├── comparator.py
 ├── bedrock_mapper.py
+├── excel_reader.py
 ├── requirements.txt
 └── README.md
 ```
