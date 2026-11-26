@@ -473,9 +473,7 @@ if old_file is not None and new_file is not None:
                     threshold=threshold
                 )
 
-                excel_file = generate_excel_report(
-                    result
-                )
+                excel_file = generate_excel_report(result)
 
                 st.session_state["report_bytes"] = excel_file
 

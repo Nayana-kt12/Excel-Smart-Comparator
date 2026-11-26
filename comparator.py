@@ -7,12 +7,12 @@ from io import BytesIO
 from openpyxl.styles import PatternFill, Font, Alignment
 
 NO_MATCH = "No match found"
-EXCLUDED_COMPARISON_COLUMNS = frozenset({"doj", "esicno", "uanno"})
+EXCLUDED_COMPARISON_COLUMNS = frozenset()
 
 COLUMN_ALIAS_GROUPS = (
     ("basic", "basic salary", "basic pay", "bs"),
     ("employee id", "emp id", "empid", "employee number", "emp no"),
-    ("employee code", "emp code", "bio", "bio no"),
+    ("employee code", "emp code", "bio", "bio no", "staff code"),
     ("employee name", "emp name", "empname", "name"),
     (" department ", " dept "),
     ("designation", "desig"),
@@ -26,14 +26,15 @@ def norm_name(value):
     return re.sub(r"[^a-z0-9]+", "", str(value).strip().lower())
 
 def column_base_name(value):
-    return str(value).rsplit(" | ", 1)[-1].strip()
+    return str(value).strip()
 
 def filter_comparison_columns(df):
-    columns = [
-        column for column in df.columns
+    positions = [
+        index
+        for index, column in enumerate(df.columns)
         if norm_name(column) not in EXCLUDED_COMPARISON_COLUMNS
     ]
-    return df.loc[:, columns].copy()
+    return df.iloc[:, positions].copy()
 
 def column_alias_group(value):
     normalized = norm_name(column_base_name(value))
@@ -152,8 +153,19 @@ def build_column_mapping(df1, df2, suggested=None):
     return mapping
 
 def find_id_pair(df1, df2, mapping):
-    id_words = ("id", "employeeid", "empid", "staffid", "personid", "recordid", "employee number", "employee no")
-    for c1, c2 in column_mapping_pairs(mapping):
+    pairs = list(column_mapping_pairs(mapping))
+    for c1, c2 in pairs:
+        if (
+            c2 is not None
+            and column_alias_group(c1) == norm_name("employee code")
+        ):
+            return c1, c2
+
+    id_words = (
+        "id", "employeeid", "empid", "staffid", "personid", "recordid",
+        "employee number", "employee no",
+    )
+    for c1, c2 in pairs:
         if c2 is None:
             continue
         n = norm_name(c1)
@@ -267,6 +279,76 @@ def match_rows(df1, df2, mapping, threshold=0.75):
     )
     return pairs, set(df1.index) - used1, set(df2.index) - used2, method
 
+
+def _build_side_by_side(df1, df2, mapping, row_pairs, unmatched_second):
+    headers = []
+    fields = []
+    first_headers = []
+    second_headers = []
+    first_indexes = []
+    second_indexes = []
+    column_pair_indexes = []
+
+    for first_column in df1.columns:
+        second_columns = mapping.get(first_column)
+        if isinstance(second_columns, (list, tuple)):
+            second_columns = list(second_columns)
+        elif second_columns is None:
+            second_columns = []
+        else:
+            second_columns = [second_columns]
+
+        if not second_columns:
+            continue
+
+        headers.append(str(first_column))
+        fields.append(("first", first_column))
+        first_headers.append(str(first_column))
+        first_indexes.append(len(headers) - 1)
+        first_index = len(headers) - 1
+
+        if second_columns:
+            for second_column in second_columns:
+                headers.append(str(second_column))
+                fields.append(("second", second_column))
+                second_headers.append(str(second_column))
+                second_indexes.append(len(headers) - 1)
+                column_pair_indexes.append((first_index, len(headers) - 1))
+    second_by_first = {i: j for i, j, _ in row_pairs}
+    ordered_pairs = [
+        (i, second_by_first[i])
+        for i in df1.index
+    ]
+    ordered_pairs.extend(
+        (None, j) for j in df2.index if j in unmatched_second
+    )
+
+    rows = []
+    for first_index, second_index in ordered_pairs:
+        values = []
+        for source, column in fields:
+            if source == "first":
+                value = (
+                    clean_value(df1.loc[first_index, column])
+                    if first_index is not None else None
+                )
+            else:
+                value = (
+                    clean_value(df2.loc[second_index, column])
+                    if second_index is not None and column is not None else None
+                )
+            values.append(value)
+        rows.append(values)
+
+    side_by_side = pd.DataFrame(rows, columns=headers)
+    side_by_side.attrs["first_columns"] = first_headers
+    side_by_side.attrs["second_columns"] = second_headers
+    side_by_side.attrs["first_indexes"] = first_indexes
+    side_by_side.attrs["second_indexes"] = second_indexes
+    side_by_side.attrs["column_pair_indexes"] = column_pair_indexes
+    return side_by_side
+
+
 def is_numeric_pair(a, b):
     return (a is not None and b is not None and
             not isinstance(a, (bool,)) and not isinstance(b, (bool,)) and
@@ -275,20 +357,6 @@ def is_numeric_pair(a, b):
 def compare_workbooks(df1, df2, mapping=None, threshold=0.75):
     df1 = filter_comparison_columns(df1)
     df2 = filter_comparison_columns(df2)
-
-    if mapping is not None:
-        mapping = {
-            c1: (
-                [
-                    c2 for c2 in c2_values
-                    if norm_name(c2) not in EXCLUDED_COMPARISON_COLUMNS
-                ]
-                if isinstance(c2_values, (list, tuple))
-                else c2_values
-            )
-            for c1, c2_values in mapping.items()
-            if norm_name(c1) not in EXCLUDED_COMPARISON_COLUMNS
-        }
 
     mapping = mapping if mapping is not None else build_column_mapping(df1, df2)
     invalid_first_columns = [column for column in mapping if column not in df1.columns]
@@ -328,6 +396,25 @@ def compare_workbooks(df1, df2, mapping=None, threshold=0.75):
     row_pairs, unmatched1, unmatched2, method = match_rows(
         df1, df2, mapping, threshold
     )
+    id_pair = find_id_pair(df1, df2, mapping)
+    side_by_side = _build_side_by_side(
+        df1, df2, mapping, row_pairs, unmatched2
+    )
+    side_by_side_column_pairs = [
+        (str(c1), str(c2))
+        for c1, c2 in column_pairs
+        if c2 is not None
+    ]
+    side_by_side_unmatched_rows = {
+        position: "first"
+        for position, index in enumerate(df1.index)
+        if index in unmatched1
+    }
+    next_position = len(df1)
+    for index in df2.index:
+        if index in unmatched2:
+            side_by_side_unmatched_rows[next_position] = "second"
+            next_position += 1
     output_rows = []
     for i, j, score in row_pairs:
         r1 = df1.loc[i]
@@ -369,6 +456,8 @@ def compare_workbooks(df1, df2, mapping=None, threshold=0.75):
     matched_count = sum(1 for _, j, _ in row_pairs if j is not None)
     summary = pd.DataFrame([{
         "First workbook rows": len(df1), "Second workbook rows": len(df2),
+        "First workbook columns": len(df1.columns),
+        "Second workbook columns": len(df2.columns),
         "Matched rows": matched_count, "Unmatched first-file rows": len(unmatched1),
         "Unmatched second-file rows": len(unmatched2), "Row matching method": method,
         "Matched columns": sum(
@@ -381,7 +470,14 @@ def compare_workbooks(df1, df2, mapping=None, threshold=0.75):
         "Unmatched second-file columns": len(df2.columns) - len(mapped2)
     }])
     return {"summary": summary, "columns": pd.DataFrame(col_rows),
-            "rows": pd.DataFrame(output_rows), "unmatched": pd.DataFrame(unmatched_rows)}
+            "rows": pd.DataFrame(output_rows), "unmatched": pd.DataFrame(unmatched_rows),
+            "side_by_side": side_by_side,
+            "side_by_side_key_columns": (
+                [str(id_pair[0]), str(id_pair[1])]
+                if id_pair is not None else []
+            ),
+            "side_by_side_column_pairs": side_by_side_column_pairs,
+            "side_by_side_unmatched_rows": side_by_side_unmatched_rows}
 
 
 def generate_excel_report(result):
@@ -405,6 +501,10 @@ def generate_excel_report(result):
 
         result["unmatched"].to_excel(
             writer, sheet_name="Unmatched Rows", index=False
+        )
+
+        result["side_by_side"].to_excel(
+            writer, sheet_name="comparision", index=False
         )
 
         # Excel colors
@@ -456,11 +556,98 @@ def generate_excel_report(result):
                         cell.fill = red_fill
                         cell.font = red_font
 
+        # Highlight unmatched side-by-side rows by their source workbook.
+        side_by_side_ws = writer.book["comparision"]
+        key_columns = set(result.get("side_by_side_key_columns", []))
+        first_fill = PatternFill(fill_type="solid", fgColor="F4CCCC")
+        second_fill = PatternFill(fill_type="solid", fgColor="D9D2E9")
+        first_numeric_fill = PatternFill(fill_type="solid", fgColor="FCE4D6")
+        second_numeric_fill = PatternFill(fill_type="solid", fgColor="DDEBF7")
+        key_fill = PatternFill(fill_type="solid", fgColor="C00060")
+        key_font = Font(color="FFFFFF", bold=True)
+        numeric_columns = {
+            index + 1
+            for index, dtype in enumerate(result["side_by_side"].dtypes)
+            if pd.api.types.is_numeric_dtype(dtype)
+        }
+        key_column_indexes = {
+            cell.column
+            for cell in side_by_side_ws[1]
+            if cell.value in key_columns
+        }
+        first_source_indexes = {
+            index + 1
+            for index in result["side_by_side"].attrs.get("first_indexes", [])
+        }
+        second_source_indexes = {
+            index + 1
+            for index in result["side_by_side"].attrs.get("second_indexes", [])
+        }
+
+        for data_index, source in result.get(
+            "side_by_side_unmatched_rows", {}
+        ).items():
+            excel_row = data_index + 2
+            for column_index in range(1, side_by_side_ws.max_column + 1):
+                cell = side_by_side_ws.cell(
+                    row=excel_row,
+                    column=column_index,
+                )
+                if cell.value is None:
+                    continue
+                if column_index in key_column_indexes:
+                    cell.fill = key_fill
+                    cell.font = key_font
+                elif source == "first" and column_index in first_source_indexes:
+                    cell.fill = (
+                        first_numeric_fill
+                        if column_index in numeric_columns else first_fill
+                    )
+                elif source == "second" and column_index in second_source_indexes:
+                    cell.fill = (
+                        second_numeric_fill
+                        if column_index in numeric_columns else second_fill
+                    )
+
+        side_by_side_data = result["side_by_side"]
+        unmatched_data_rows = set(
+            result.get("side_by_side_unmatched_rows", {})
+        )
+        yellow_fill = PatternFill(fill_type="solid", fgColor="FFD700")
+        for data_index in range(len(side_by_side_data)):
+            if data_index in unmatched_data_rows:
+                continue
+            for first_index, second_index in side_by_side_data.attrs.get(
+                "column_pair_indexes", []
+            ):
+                first_value = side_by_side_data.iloc[data_index, first_index]
+                second_value = side_by_side_data.iloc[data_index, second_index]
+                if (
+                    clean_value(first_value) is not None
+                    and clean_value(second_value) is not None
+                    and not values_equal(first_value, second_value)
+                ):
+                    side_by_side_ws.cell(
+                        row=data_index + 2,
+                        column=first_index + 1,
+                    ).fill = yellow_fill
+                    side_by_side_ws.cell(
+                        row=data_index + 2,
+                        column=second_index + 1,
+                    ).fill = yellow_fill
+
         # Format all worksheets
         for sheet in writer.book.worksheets:
 
             sheet.freeze_panes = "A2"
             sheet.auto_filter.ref = sheet.dimensions
+            for cell in sheet[1]:
+                cell.font = Font(bold=True)
+                cell.alignment = Alignment(
+                    horizontal="center",
+                    vertical="center",
+                    wrap_text=True,
+                )
 
             for column_cells in sheet.columns:
 

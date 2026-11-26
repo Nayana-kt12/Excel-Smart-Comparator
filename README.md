@@ -11,9 +11,13 @@ A Streamlit application to compare any two Excel workbooks/sheets and export a n
   - If no common ID exists, score candidate rows using all mapped columns and match one-to-one above the selected threshold.
   - A missing/blank ID or an ID absent from the other workbook is not treated as a match.
 - Show values side by side.
-- Numeric differences are calculated as **second workbook value − first workbook value**.
+- Show employee-code columns from the first and second workbooks separately.
+- The side-by-side sheet includes mapped columns only and highlights differing values, including text and numbers, in yellow. Numeric differences are calculated as **second workbook value − first workbook value**.
+- Report worksheet column headers are bold and centered.
 - Categorical values show **Match** when equal; otherwise **No match found**.
-- Export Summary, Column Comparison, Row Comparison, and Unmatched Rows sheets to a new `.xlsx` file.
+- Match rows by employee code/ID when a common code or ID column is available.
+- Export the side-by-side comparison, comparison results, and column mapping details to a new `.xlsx` file. Original worksheets from the uploaded workbooks are not copied into the report.
+- Highlight unmatched side-by-side rows by source, with employee-code cells in dark pink and numeric cells in distinct source colors.
 
 ## Setup (Windows)
 
@@ -45,6 +49,7 @@ If your organization uses temporary credentials, also set `AWS_SESSION_TOKEN`. A
 ## Important matching behavior
 
 - The application treats a common ID column as the strongest key. It does not silently pair different IDs just because other fields look similar.
+- Common employee code headers such as `Employee Code`, `Emp Code`, and `BIO NO.` are treated as row keys.
 - If no common ID column is detected, unique matches on a mapped employee-name column are paired first; duplicate names are not used as keys. Remaining rows are matched by similarity across mapped columns. The threshold is adjustable in the UI.
 - Exact normalized names are matched first. Common aliases such as `Department`/`DEPT`, `Basic`/`BS`, `Employee Name`/`Name`, and initialisms of multiword headers are matched automatically when unambiguous.
 - When column names differ semantically beyond those aliases, use the Claude Sonnet suggestion button. Review the mapping shown in the UI before generating the report.

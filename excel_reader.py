@@ -35,51 +35,24 @@ def _detect_header_row(excel_file, sheet_name, preview_rows):
 
 
 def _apply_grouped_header_names(excel_file, sheet_name, header_row, frame):
-    if header_row == 0:
-        return frame
-
     workbook = getattr(excel_file, "book", None)
     sheet_names = getattr(workbook, "sheetnames", [])
     if sheet_name not in sheet_names:
         return frame
 
     worksheet = workbook[sheet_name]
-    merged_cells = getattr(worksheet, "merged_cells", None)
-    if merged_cells is None:
-        return frame
-
-    groups_by_column = {}
-    for merged_range in merged_cells.ranges:
-        if merged_range.min_row != header_row or merged_range.max_col == merged_range.min_col:
-            continue
-        parent = worksheet.cell(
-            row=merged_range.min_row,
-            column=merged_range.min_col,
-        ).value
-        if isinstance(parent, str) and parent.strip():
-            for column_index in range(
-                merged_range.min_col, merged_range.max_col + 1
-            ):
-                groups_by_column[column_index - 1] = parent.strip()
-
-    if len(set(groups_by_column.values())) < 2:
-        return frame
-
-    qualified_columns = []
-    for index, column in enumerate(frame.columns):
-        if index not in groups_by_column:
-            qualified_columns.append(column)
-            continue
-
-        child = worksheet.cell(
-            row=header_row + 1,
-            column=index + 1,
-        ).value
-        child = str(child).strip() if child is not None else str(column)
-        qualified_columns.append(f"{groups_by_column[index]} | {child}")
-
+    worksheet_column_count = worksheet.max_column
+    if len(frame.columns) > worksheet_column_count:
+        frame = frame.iloc[:, :worksheet_column_count].copy()
+    uploaded_names = [
+        worksheet.cell(row=header_row + 1, column=index + 1).value
+        for index in range(len(frame.columns))
+    ]
     frame = frame.copy()
-    frame.columns = qualified_columns
+    frame.columns = [
+        str(name).strip() if name is not None else str(column)
+        for name, column in zip(uploaded_names, frame.columns)
+    ]
     return frame
 
 
