@@ -1,6 +1,76 @@
 import pandas as pd
 
-from comparator import filter_comparison_columns
+from comparator import (
+    column_alias_group,
+    column_field_name,
+    filter_comparison_columns,
+    norm_name,
+)
+
+
+def _group_header_name(worksheet, header_row, column_index):
+    if header_row < 1:
+        return None
+
+    for merged_range in worksheet.merged_cells.ranges:
+        if (
+            merged_range.min_row == header_row
+            and merged_range.min_col <= column_index <= merged_range.max_col
+        ):
+            value = worksheet.cell(
+                row=merged_range.min_row,
+                column=merged_range.min_col,
+            ).value
+            if value is not None and str(value).strip():
+                return str(value).strip()
+    return None
+
+
+def _header_equivalence_key(name):
+    field_name = norm_name(column_field_name(name))
+    if field_name.startswith("pf"):
+        return "statutory:pf"
+    if field_name.startswith("esic"):
+        return "statutory:esic"
+
+    alias_group = column_alias_group(name)
+    if alias_group is not None:
+        return f"alias:{alias_group}"
+    return f"name:{field_name}"
+
+
+def _unique_column_names(columns, worksheet, header_row):
+    names = [str(column) for column in columns]
+    counts = {}
+    for name in names:
+        normalized = _header_equivalence_key(name)
+        counts[normalized] = counts.get(normalized, 0) + 1
+
+    for index, name in enumerate(names):
+        normalized = _header_equivalence_key(name)
+        if counts[normalized] > 1:
+            group_name = _group_header_name(
+                worksheet,
+                header_row,
+                index + 1,
+            )
+            if group_name:
+                names[index] = f"{group_name} | {name}"
+
+    used = set()
+    unique_names = []
+    for name in names:
+        normalized = name.casefold()
+        candidate = name
+        if normalized in used:
+            occurrence = 2
+            candidate = f"{name} [duplicate {occurrence}]"
+            while candidate.casefold() in used:
+                occurrence += 1
+                candidate = f"{name} [duplicate {occurrence}]"
+        used.add(candidate.casefold())
+        unique_names.append(candidate)
+    return unique_names
 
 
 def _detect_header_row(excel_file, sheet_name, preview_rows):
@@ -53,6 +123,11 @@ def _apply_grouped_header_names(excel_file, sheet_name, header_row, frame):
         str(name).strip() if name is not None else str(column)
         for name, column in zip(uploaded_names, frame.columns)
     ]
+    frame.columns = _unique_column_names(
+        frame.columns,
+        worksheet,
+        header_row,
+    )
     return frame
 
 

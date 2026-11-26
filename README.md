@@ -11,6 +11,7 @@ A Streamlit application to compare any two Excel workbooks/sheets and export a n
   - If no common ID exists, score candidate rows using all mapped columns and match one-to-one above the selected threshold.
   - A missing/blank ID or an ID absent from the other workbook is not treated as a match.
 - Show values side by side.
+- Paired columns in the exported side-by-side sheet are labeled with `_GH` and `_Client` suffixes; repeated or equivalent headers use their grouped heading when available, such as `Master Wage | BASIC`. A first-workbook field maps to every matching grouped subheader in the second workbook.
 - Show employee-code columns from the first and second workbooks separately.
 - The side-by-side sheet includes mapped columns only and highlights differing values, including text and numbers, in yellow. Numeric differences are calculated as **second workbook value − first workbook value**.
 - Report worksheet column headers are bold and centered.

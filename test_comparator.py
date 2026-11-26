@@ -32,6 +32,105 @@ class ColumnMappingTests(unittest.TestCase):
 
         self.assertEqual(build_column_mapping(first, second), {"Basic": "BS"})
 
+    def test_grouped_basic_header_matches_its_base_field(self):
+        first = pd.DataFrame(columns=["Basic"])
+        second = pd.DataFrame(columns=["Master Wage | BASIC"])
+
+        self.assertEqual(
+            build_column_mapping(first, second),
+            {"Basic": ["Master Wage | BASIC"]},
+        )
+
+    def test_grouped_conveyance_headers_match_abbreviated_source_header(self):
+        first = pd.DataFrame(columns=["Conv Allw"])
+        second = pd.DataFrame(columns=[
+            "Master Wage | Conv Allow.",
+            "Earning wage | Conv Allow",
+        ])
+
+        self.assertEqual(
+            build_column_mapping(first, second),
+            {
+                "Conv Allw": [
+                    "Master Wage | Conv Allow.",
+                    "Earning wage | Conv Allow",
+                ]
+            },
+        )
+
+    def test_payroll_labels_map_to_the_expected_grouped_columns(self):
+        first = pd.DataFrame(columns=[
+            "PF",
+            "ESIC",
+            "Net Pay",
+            "Employer PF",
+            "Employer ESIC",
+        ])
+        second = pd.DataFrame(columns=[
+            "Employee deduction | PF 12%",
+            "Employee deduction | ESIC 0.75%",
+            "Net Salary",
+            "Employer Contribution | PF 13%",
+            "Employer Contribution | ESIC 3.25%",
+        ])
+
+        self.assertEqual(
+            build_column_mapping(first, second),
+            {
+                "PF": ["Employee deduction | PF 12%"],
+                "ESIC": ["Employee deduction | ESIC 0.75%"],
+                "Net Pay": "Net Salary",
+                "Employer PF": ["Employer Contribution | PF 13%"],
+                "Employer ESIC": ["Employer Contribution | ESIC 3.25%"],
+            },
+        )
+
+    def test_repeated_fields_map_to_all_matching_grouped_headers(self):
+        first = pd.DataFrame(columns=["Basic", "Basic [duplicate 2]"])
+        second = pd.DataFrame(columns=[
+            "Master Wage | BASIC",
+            "Earning wage | BASIC",
+        ])
+
+        self.assertEqual(
+            build_column_mapping(first, second),
+            {
+                "Basic": [
+                    "Master Wage | BASIC",
+                    "Earning wage | BASIC",
+                ],
+                "Basic [duplicate 2]": [
+                    "Master Wage | BASIC",
+                    "Earning wage | BASIC",
+                ],
+            },
+        )
+
+    def test_one_to_many_grouped_mapping_keeps_report_headers_unique(self):
+        first = pd.DataFrame({
+            "Basic": [100],
+            "Basic [duplicate 2]": [90],
+        })
+        second = pd.DataFrame({
+            "Master Wage | BASIC": [100],
+            "Earning wage | BASIC": [90],
+        })
+
+        result = compare_workbooks(first, second)
+
+        self.assertTrue(result["side_by_side"].columns.is_unique)
+        self.assertEqual(
+            result["side_by_side"].columns.tolist(),
+            [
+                "Basic_GH",
+                "Master Wage | BASIC (Basic)_Client",
+                "Earning wage | BASIC (Basic)_Client",
+                "Basic [duplicate 2]_GH",
+                "Master Wage | BASIC (Basic [duplicate 2])_Client",
+                "Earning wage | BASIC (Basic [duplicate 2])_Client",
+            ],
+        )
+
 
     def test_excel_timestamp_matches_iso_date_string(self):
         self.assertTrue(
@@ -76,29 +175,29 @@ class ColumnMappingTests(unittest.TestCase):
         self.assertEqual(
             result["side_by_side"].columns.tolist(),
             [
-                "Emp Code",
-                "BIO NO.",
-                "Employee Name",
-                "Name",
-                "Department",
-                "DEPT",
+                "Emp Code_GH",
+                "BIO NO._Client",
+                "Employee Name_GH",
+                "Name_Client",
+                "Department_GH",
+                "DEPT_Client",
             ],
         )
         self.assertNotIn(
-            "First Only",
+            "First Only_GH",
             result["side_by_side"].columns,
         )
         self.assertNotIn(
-            "Second Only",
+            "Second Only_Client",
             result["side_by_side"].columns,
         )
-        first_codes = result["side_by_side"]["Emp Code"].tolist()
-        second_codes = result["side_by_side"]["BIO NO."].tolist()
+        first_codes = result["side_by_side"]["Emp Code_GH"].tolist()
+        second_codes = result["side_by_side"]["BIO NO._Client"].tolist()
         self.assertEqual(first_codes[:2], ["A1", "A2"])
         self.assertTrue(pd.isna(first_codes[2]))
         self.assertEqual(second_codes, ["A1", "A2", "A3"])
         self.assertEqual(
-            result["side_by_side"]["Name"].tolist(),
+            result["side_by_side"]["Name_Client"].tolist(),
             ["Alex", "Blair", "Casey"],
         )
 
@@ -119,7 +218,7 @@ class ColumnMappingTests(unittest.TestCase):
         self.assertEqual(int(result["summary"].iloc[0]["Matched rows"]), 0)
         self.assertEqual(
             result["side_by_side_key_columns"],
-            ["Emp Code", "BIO NO."],
+            ["Emp Code_GH", "BIO NO._Client"],
         )
 
     def test_report_contains_comparison_sheets_and_mapping_details(self):
@@ -347,6 +446,37 @@ class ColumnMappingTests(unittest.TestCase):
 
 
 class ExcelReaderTests(unittest.TestCase):
+    def test_qualifies_pf_and_esic_headers_by_their_group(self):
+        workbook_bytes = BytesIO()
+        with pd.ExcelWriter(workbook_bytes, engine="openpyxl") as writer:
+            pd.DataFrame([
+                ["Report", None, None, None, None],
+                ["Employer Contribution", None, "Employee deduction", None, None],
+                ["PF 13%", "ESIC 3.25%", "PF 12%", "ESIC 0.75%", "Net Salary"],
+                [100, 25, 50, 5, 1200],
+            ]).to_excel(writer, sheet_name="Payroll", header=False, index=False)
+            worksheet = writer.book["Payroll"]
+            worksheet.merge_cells("A2:B2")
+            worksheet.merge_cells("C2:D2")
+        workbook_bytes.seek(0)
+
+        with pd.ExcelFile(
+            workbook_bytes,
+            engine_kwargs={"read_only": False},
+        ) as workbook:
+            frame = read_sheet_with_detected_header(workbook, "Payroll")
+
+        self.assertEqual(
+            list(frame.columns),
+            [
+                "Employer Contribution | PF 13%",
+                "Employer Contribution | ESIC 3.25%",
+                "Employee deduction | PF 12%",
+                "Employee deduction | ESIC 0.75%",
+                "Net Salary",
+            ],
+        )
+
     def test_detects_text_headers_above_data_rows(self):
         workbook_bytes = BytesIO()
         with pd.ExcelWriter(workbook_bytes, engine="openpyxl") as writer:
@@ -365,18 +495,18 @@ class ExcelReaderTests(unittest.TestCase):
         self.assertEqual(frame.iloc[0].tolist(), [1, 1001, "Alex", "Assembly"])
         self.assertEqual(frame.attrs["detected_header_row"], 3)
 
-    def test_preserves_repeated_headers_under_their_main_headers(self):
+    def test_qualifies_repeated_headers_with_their_group_headers(self):
         workbook_bytes = BytesIO()
         with pd.ExcelWriter(workbook_bytes, engine="openpyxl") as writer:
             pd.DataFrame([
-                ["Report", None, None, None, None],
-                [None, "Master Wages", None, "Earning Wages", None],
-                ["Name", "Basic", "HRA", "Basic", "HRA"],
-                ["Alex", 100, 20, 90, 18],
+                ["Report", None, None, None, None, None, None],
+                [None, "Master Wages", None, None, "Earning Wages", None, None],
+                ["Name", "Basic", "HRA", "Conv Allow.", "Basic", "HRA", "Conv Allow"],
+                ["Alex", 100, 20, 5, 90, 18, 4],
             ]).to_excel(writer, sheet_name="Wages", header=False, index=False)
             worksheet = writer.book["Wages"]
-            worksheet.merge_cells("B2:C2")
-            worksheet.merge_cells("D2:E2")
+            worksheet.merge_cells("B2:D2")
+            worksheet.merge_cells("E2:G2")
         workbook_bytes.seek(0)
 
         with pd.ExcelFile(
@@ -390,12 +520,16 @@ class ExcelReaderTests(unittest.TestCase):
             list(frame.columns),
             [
                 "Name",
-                "Basic",
-                "HRA",
-                "Basic",
-                "HRA",
+                "Master Wages | Basic",
+                "Master Wages | HRA",
+                "Master Wages | Conv Allow.",
+                "Earning Wages | Basic",
+                "Earning Wages | HRA",
+                "Earning Wages | Conv Allow",
             ],
         )
+        self.assertFalse(frame.columns.duplicated().any())
+        self.assertEqual(frame.iloc[0].tolist(), ["Alex", 100, 20, 5, 90, 18, 4])
         self.assertEqual(columns, list(frame.columns))
 
     def test_preserves_special_column_names_when_reading_sheets(self):

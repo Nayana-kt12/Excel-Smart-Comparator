@@ -17,6 +17,12 @@ COLUMN_ALIAS_GROUPS = (
     (" department ", " dept "),
     ("designation", "desig"),
     ("salary", "pay", "wage"),
+    ("conveyance allowance", "conveyance", "conv allowance", "conv allow", "conv allw"),
+    ("employer pf", "pf 13%"),
+    ("employer esic", "esic 3.25%"),
+    ("employee pf", "pf", "pf 12%"),
+    ("employee esic", "esic", "esic 0.75%"),
+    ("net pay", "net salary"),
     ("bonus", "incentive"),
     ("email", "email address"),
     ("Gender","gen","Gender"),
@@ -26,7 +32,15 @@ def norm_name(value):
     return re.sub(r"[^a-z0-9]+", "", str(value).strip().lower())
 
 def column_base_name(value):
-    return str(value).strip()
+    return re.sub(
+        r"\s+\[duplicate \d+\]$",
+        "",
+        str(value).strip(),
+        flags=re.IGNORECASE,
+    )
+
+def column_field_name(value):
+    return column_base_name(value).rsplit("|", 1)[-1].strip()
 
 def filter_comparison_columns(df):
     positions = [
@@ -37,7 +51,7 @@ def filter_comparison_columns(df):
     return df.iloc[:, positions].copy()
 
 def column_alias_group(value):
-    normalized = norm_name(column_base_name(value))
+    normalized = norm_name(column_field_name(value))
     for aliases in COLUMN_ALIAS_GROUPS:
         if normalized in {norm_name(alias) for alias in aliases}:
             return norm_name(aliases[0])
@@ -110,7 +124,7 @@ def values_equal(a, b):
         return str(a).strip().casefold() == str(b).strip().casefold()
 
 def build_column_mapping(df1, df2, suggested=None):
-    """Map each first-file column to one second-file column or None."""
+    """Map each first-file column to one or more second-file columns or None."""
     cols1, cols2 = list(df1.columns), list(df2.columns)
     mapping = {}
     used = set()
@@ -129,6 +143,34 @@ def build_column_mapping(df1, df2, suggested=None):
         if candidates:
             mapping[c1] = candidates[0] if len(candidates) == 1 else candidates
             used.update(candidates)
+
+    # Map fields to every equivalent subheader beneath a grouped heading.
+    for first_column in cols1:
+        first_field = norm_name(column_field_name(first_column))
+        first_alias_group = column_alias_group(first_column)
+        grouped_candidates = [
+            second_column
+            for second_column in cols2
+            if "|" in str(second_column)
+            and (
+                norm_name(column_field_name(second_column)) == first_field
+                or (
+                    first_alias_group is not None
+                    and column_alias_group(second_column) == first_alias_group
+                )
+            )
+        ]
+        if grouped_candidates:
+            existing = mapping.get(first_column)
+            mapped_columns = (
+                list(existing)
+                if isinstance(existing, (list, tuple))
+                else [existing] if existing is not None else []
+            )
+            mapping[first_column] = list(dict.fromkeys(
+                mapped_columns + grouped_candidates
+            ))
+            used.update(grouped_candidates)
 
     # Match aliases and single-header initialisms only when unambiguous.
     for c1 in cols1:
@@ -174,14 +216,12 @@ def find_id_pair(df1, df2, mapping):
     return None
 
 def find_name_pair(mapping):
-    name_aliases = {
-        norm_name(alias)
-        for aliases in COLUMN_ALIAS_GROUPS
-        if norm_name(aliases[0]) == norm_name("employee name")
-        for alias in aliases
-    }
     for c1, c2 in column_mapping_pairs(mapping):
-        if c2 is not None and norm_name(c1) in name_aliases and norm_name(c2) in name_aliases:
+        if (
+            c2 is not None
+            and column_alias_group(c1) == norm_name("employee name")
+            and column_alias_group(c2) == norm_name("employee name")
+        ):
             return c1, c2
     return None
 
@@ -288,6 +328,10 @@ def _build_side_by_side(df1, df2, mapping, row_pairs, unmatched_second):
     first_indexes = []
     second_indexes = []
     column_pair_indexes = []
+    second_column_sources = {}
+    for first_column, second_column in column_mapping_pairs(mapping):
+        if second_column is not None:
+            second_column_sources.setdefault(second_column, []).append(first_column)
 
     for first_column in df1.columns:
         second_columns = mapping.get(first_column)
@@ -301,17 +345,22 @@ def _build_side_by_side(df1, df2, mapping, row_pairs, unmatched_second):
         if not second_columns:
             continue
 
-        headers.append(str(first_column))
+        headers.append(f"{first_column}_GH")
         fields.append(("first", first_column))
-        first_headers.append(str(first_column))
+        first_headers.append(f"{first_column}_GH")
         first_indexes.append(len(headers) - 1)
         first_index = len(headers) - 1
 
         if second_columns:
             for second_column in second_columns:
-                headers.append(str(second_column))
+                second_header = str(second_column)
+                if len(second_column_sources.get(second_column, [])) > 1:
+                    second_header = (
+                        f"{second_header} ({first_column})"
+                    )
+                headers.append(f"{second_header}_Client")
                 fields.append(("second", second_column))
-                second_headers.append(str(second_column))
+                second_headers.append(f"{second_header}_Client")
                 second_indexes.append(len(headers) - 1)
                 column_pair_indexes.append((first_index, len(headers) - 1))
     second_by_first = {i: j for i, j, _ in row_pairs}
@@ -372,9 +421,6 @@ def compare_workbooks(df1, df2, mapping=None, threshold=0.75):
     mapped_second_columns = [
         column for _, column in column_pairs if column is not None
     ]
-    if len(mapped_second_columns) != len(set(mapped_second_columns)):
-        raise ValueError("Each second-workbook column can be mapped only once.")
-
     # Column-level output: show values from both workbooks for each mapped or missing column.
     col_rows = []
     for c1, c2 in column_pairs:
@@ -473,7 +519,7 @@ def compare_workbooks(df1, df2, mapping=None, threshold=0.75):
             "rows": pd.DataFrame(output_rows), "unmatched": pd.DataFrame(unmatched_rows),
             "side_by_side": side_by_side,
             "side_by_side_key_columns": (
-                [str(id_pair[0]), str(id_pair[1])]
+                [f"{id_pair[0]}_GH", f"{id_pair[1]}_Client"]
                 if id_pair is not None else []
             ),
             "side_by_side_column_pairs": side_by_side_column_pairs,
