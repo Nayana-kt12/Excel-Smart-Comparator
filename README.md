@@ -6,6 +6,7 @@ A Streamlit application to compare any two Excel workbooks/sheets and export a n
 - Upload two Excel files and choose a worksheet from each. The app detects header rows in the first 20 rows, including sheets with title rows above their headers, and recommends the second workbook sheet with the most matching column headers.
 - Map columns using Anthropic Claude Sonnet through AWS Bedrock (optional), with normalized-name, alias, and initialism matching as a fallback.
 - Display columns that do not have a counterpart as **No match found**.
+- Resolve unmatched columns directly in the mapping table using a dropdown in the second-workbook column cell; it lists all columns from the second workbook.
 - Match rows automatically:
   - If both sheets have a common ID-like column, use that ID as the authoritative row key.
   - If no common ID exists, score candidate rows using all mapped columns and match one-to-one above the selected threshold.
@@ -54,6 +55,7 @@ If your organization uses temporary credentials, also set `AWS_SESSION_TOKEN`. A
 - If no common ID column is detected, unique matches on a mapped employee-name column are paired first; duplicate names are not used as keys. Remaining rows are matched by similarity across mapped columns. The threshold is adjustable in the UI.
 - Exact normalized names are matched first. Common aliases such as `Department`/`DEPT`, `Basic`/`BS`, `Employee Name`/`Name`, and initialisms of multiword headers are matched automatically when unambiguous.
 - When column names differ semantically beyond those aliases, use the Claude Sonnet suggestion button. Review the mapping shown in the UI before generating the report.
+- For any first-workbook column marked **No match found**, select a second-workbook column from its dropdown or leave it unmatched. Selecting an already-mapped column moves that mapping to the selected pair. Second-only columns remain read-only.
 - For numerical fields, differences are calculated only when both values are numeric. Text/category mismatches are marked **No match found**.
 - A value missing from one side is displayed as **No match found** in the report.
 

@@ -389,67 +389,193 @@ if old_file is not None and new_file is not None:
             suggested=ai_mapping
         )
 
-        mapping_rows = []
+        manual_mapping_key = f"{mapping_key}_manual"
+        manual_mapping = st.session_state.get(
+            manual_mapping_key,
+            {}
+        ).copy()
 
-        for old_column, new_column in column_mapping_pairs(auto_mapping):
-
-            mapping_rows.append({
-
-                "First workbook column": old_column,
-
-                "Second workbook column": (
-                    new_column
-                    if new_column is not None
-                    else "No match found"
-                ),
-
-                "Status": (
-                    "Matched"
-                    if new_column is not None
-                    else "No match found"
-                ),
-
-                "Mapping source": (
-                    "Claude AI"
-                    if old_column in ai_mapping
-                    and ai_mapping[old_column] == new_column
-                    else "Automatic matching"
+        for old_column, new_column in list(manual_mapping.items()):
+            if (
+                old_column not in df1.columns
+                or (
+                    new_column is not None
+                    and new_column not in df2.columns
                 )
+            ):
+                manual_mapping.pop(old_column, None)
 
-            })
+        manual_owners = {}
+        for old_column, new_column in manual_mapping.items():
+            if new_column is not None:
+                manual_owners[new_column] = old_column
+        for old_column, new_column in list(manual_mapping.items()):
+            if (
+                new_column is not None
+                and manual_owners[new_column] != old_column
+            ):
+                manual_mapping.pop(old_column, None)
 
-        # Show columns that exist only in second workbook
-        mapped_columns = {
-            value
-            for _, value in column_mapping_pairs(auto_mapping)
-            if value is not None
+        def update_manual_mapping(old_column, new_column):
+            for existing_column, existing_match in list(
+                manual_mapping.items()
+            ):
+                if (
+                    existing_column == old_column
+                    or (
+                        new_column is not None
+                        and existing_match == new_column
+                    )
+                ):
+                    manual_mapping.pop(existing_column, None)
+            manual_mapping[old_column] = new_column
+
+        def build_effective_mapping():
+            effective = auto_mapping.copy()
+            for old_column, new_column in manual_mapping.items():
+                if new_column is not None:
+                    for other_column in effective:
+                        if other_column == old_column:
+                            continue
+                        existing_match = effective[other_column]
+                        if isinstance(existing_match, (list, tuple)):
+                            remaining_matches = [
+                                match
+                                for match in existing_match
+                                if match != new_column
+                            ]
+                            effective[other_column] = (
+                                remaining_matches[0]
+                                if len(remaining_matches) == 1
+                                else remaining_matches or None
+                            )
+                        elif existing_match == new_column:
+                            effective[other_column] = None
+                effective[old_column] = new_column
+            return effective
+
+        second_column_widget_keys = {
+            column: f"{manual_mapping_key}_second_{index}"
+            for index, column in enumerate(df1.columns)
         }
 
+        effective_mapping = build_effective_mapping()
+        for old_column, widget_key in second_column_widget_keys.items():
+            if (
+                effective_mapping.get(old_column) is None
+                or old_column in manual_mapping
+            ):
+                if widget_key in st.session_state:
+                    selected_column = st.session_state[widget_key]
+                    if (
+                        selected_column is not None
+                        and selected_column not in df2.columns
+                    ):
+                        selected_column = None
+                    if selected_column != manual_mapping.get(old_column):
+                        update_manual_mapping(old_column, selected_column)
+            else:
+                st.session_state.pop(widget_key, None)
+
+        effective_mapping = build_effective_mapping()
+        effective_mapping = build_effective_mapping()
+        mapped_columns = {
+            column
+            for _, column in column_mapping_pairs(effective_mapping)
+            if column is not None
+        }
+
+        st.session_state[manual_mapping_key] = manual_mapping
+        for old_column, widget_key in second_column_widget_keys.items():
+            if old_column in manual_mapping:
+                st.session_state[widget_key] = manual_mapping[old_column]
+            else:
+                st.session_state.pop(widget_key, None)
+
+        table_columns = st.columns([3, 3, 2, 2])
+        for cell, label in zip(
+            table_columns,
+            [
+                "First workbook column",
+                "Second workbook column",
+                "Status",
+                "Mapping source",
+            ]
+        ):
+            cell.markdown(f"**{label}**")
+
+        for old_column in df1.columns:
+            new_columns = effective_mapping.get(old_column)
+            if isinstance(new_columns, (list, tuple)):
+                column_matches = list(new_columns)
+            else:
+                column_matches = [new_columns]
+
+            if new_columns is None or old_column in manual_mapping:
+                selected_column = manual_mapping.get(old_column)
+                options = [None] + list(df2.columns)
+                with st.container(border=True):
+                    cells = st.columns([3, 3, 2, 2])
+                    cells[0].write(str(old_column))
+                    selectbox_options = {
+                        "format_func": lambda value: (
+                            "No match found" if value is None else str(value)
+                        ),
+                        "label_visibility": "collapsed",
+                        "key": second_column_widget_keys[old_column],
+                    }
+                    if selectbox_options["key"] not in st.session_state:
+                        selectbox_options["index"] = options.index(
+                            selected_column
+                        )
+                    cells[1].selectbox(
+                        f"Second workbook column for {old_column}",
+                        options,
+                        **selectbox_options
+                    )
+                    cells[2].write(
+                        "Matched"
+                        if selected_column is not None
+                        else "No match found"
+                    )
+                    cells[3].write(
+                        "Manual selection"
+                        if old_column in manual_mapping
+                        else "Automatic matching"
+                    )
+                continue
+
+            for new_column in column_matches:
+                with st.container(border=True):
+                    cells = st.columns([3, 3, 2, 2])
+                    cells[0].write(str(old_column))
+                    cells[1].write(str(new_column))
+                    cells[2].write("Matched")
+                    cells[3].write(
+                        "Claude AI"
+                        if old_column in ai_mapping
+                        and ai_mapping[old_column] == new_column
+                        else "Automatic matching"
+                    )
+
         for column in df2.columns:
-
             if column not in mapped_columns:
+                with st.container(border=True):
+                    cells = st.columns([3, 3, 2, 2])
+                    cells[0].write("No match found")
+                    cells[1].write(str(column))
+                    cells[2].write("Unmatched")
+                    cells[3].write("Automatic matching")
 
-                mapping_rows.append({
-
-                    "First workbook column": "No match found",
-
-                    "Second workbook column": column,
-
-                    "Status": "Unmatched",
-
-                    "Mapping source": "-"
-
-                })
-
-        st.dataframe(
-            pd.DataFrame(mapping_rows),
-            use_container_width=True,
-            hide_index=True
+        result_key = (
+            f"{mapping_key}_excluding-doj-esic-uan-v2_"
+            f"{hashlib.sha256(repr(effective_mapping).encode('utf-8')).hexdigest()[:12]}"
         )
 
         st.caption(
-            "Review the column mapping before generating "
-            "the comparison report."
+            "The dropdown in the second-workbook column lists all columns "
+            "from that workbook. Selecting an already-mapped column moves "
+            "that match. Review the mapping before generating the report."
         )
 
         # --------------------------------------------------
@@ -469,7 +595,7 @@ if old_file is not None and new_file is not None:
                 result = compare_workbooks(
                     df1,
                     df2,
-                    mapping=auto_mapping,
+                    mapping=effective_mapping,
                     threshold=threshold
                 )
 
